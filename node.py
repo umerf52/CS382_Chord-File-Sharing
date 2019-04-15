@@ -2,10 +2,11 @@ import socket
 import threading
 import hashlib
 import argparse
+import os
 
 # Globals
-# IP_ADDRESS = socket.gethostbyname(socket.gethostname())
-IP_ADDRESS = '192.168.137.1'
+IP_ADDRESS = socket.gethostbyname(socket.gethostname())
+# IP_ADDRESS = '192.168.137.1'
 TOTAL_NODES = 30
 BASE_16 = 16
 BUFFER_SIZE = 1024
@@ -17,13 +18,13 @@ class Node:
 		self.port = port
 		self.successor = port
 		self.second_successor = port
-		self.predeccessor = port
+		self.predecessor = port
 
 	def print_information(self):
 		print('My key is:', self.key,", with port:", self.port)
 		print('My successor\'s key is:', hash_func(IP_ADDRESS+str(self.successor)),", with port:", self.successor)
 		print('My second successors\'s key is:', hash_func(IP_ADDRESS+str(self.second_successor)),", with port:", self.second_successor)
-		print('My predecessor\'s key is:', hash_func(IP_ADDRESS+str(self.predeccessor)),", with port:", self.predeccessor, '\n')
+		print('My predecessor\'s key is:', hash_func(IP_ADDRESS+str(self.predecessor)),", with port:", self.predecessor, '\n')
 
 
 def hash_func(value):
@@ -39,7 +40,7 @@ def join_me(node, known_port):
 	msg = s.recv(BUFFER_SIZE).decode('utf-8')
 	if msg == 'YES':
 		node.successor = known_port
-		node.predeccessor = known_port
+		node.predecessor = known_port
 		msg = 'UPDATE_SUCCESSOR_AND_PREDECESSOR'
 		s.send(msg.encode('utf-8'))
 		msg = s.recv(BUFFER_SIZE).decode('utf-8')
@@ -87,18 +88,67 @@ def actual_join(s, node, known_port, other_pred_port):
 	another_socket.send('I_AM_YOUR_SUCCESSOR'.encode('utf-8'))
 	msg = another_socket.recv(BUFFER_SIZE).decode('utf-8')
 	another_socket.send(str(node.port).encode('utf-8'))
-	node.predeccessor = other_pred_port
+	node.predecessor = other_pred_port
 	# Update the second successor of predecessor as well
 	msg = another_socket.recv(BUFFER_SIZE).decode('utf-8')
 	another_socket.send(str(node.successor).encode('utf-8'))
 	another_socket.close()
 
 
+def node_leaving(node):
+	# Tell predecessor
+	if node.successor == node.port:
+		return
+
+	elif node.successor == node.predecessor:
+		another_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		another_socket.connect((IP_ADDRESS, int(node.successor)))
+		another_socket.send('SUCCESSOR_AND_PREDECESSOR_LEAVING'.encode('utf-8'))
+		msg = another_socket.recv(BUFFER_SIZE).decode('utf-8')
+		if msg == 'ACK':
+			pass
+		another_socket.close()
+		return
+
+	else:
+		another_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		another_socket.connect((IP_ADDRESS, int(node.predecessor)))
+		another_socket.send('SUCCESSOR_LEAVING'.encode('utf-8'))
+		msg = another_socket.recv(BUFFER_SIZE).decode('utf-8')
+		if msg == 'ACK':
+			msg = ''
+			another_socket.send(str(node.successor).encode('utf-8'))
+			msg = another_socket.recv(BUFFER_SIZE).decode('utf-8')
+			if msg == 'ACK':
+				if node.second_successor == node.port:
+					another_socket.send(str(node.successor).encode('utf-8'))
+				else:
+					another_socket.send(str(node.second_successor).encode('utf-8'))
+		another_socket.close()
+
+		# Tell successor
+		s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+		s.connect((IP_ADDRESS, int(node.successor)))
+		s.send('PREDECESSOR_LEAVING'.encode('utf-8'))
+		msg = s.recv(BUFFER_SIZE).decode('utf-8')
+		if msg == 'ACK':
+			msg = ''
+			s.send(str(node.port).encode('utf-8'))
+			msg = s.recv(BUFFER_SIZE).decode('utf-8')
+			if msg == 'ACK':
+				s.send(str(node.predecessor).encode('utf-8'))
+		s.close()
+
+
+
 def client_thread(node):
 	while True:
-		option = input('Enter 1 to print links:\n')
+		option = input('Enter 1 to print links\nEnter 0 to leave DHT\n')
 		if option == '1':
 			node.print_information();
+		elif option == '0':
+			node_leaving(node)
+			os._exit(0)
 		else:
 			continue
 
@@ -107,7 +157,7 @@ def server_thread(this_node, conn):
 	while True:
 		msg = conn.recv(BUFFER_SIZE).decode('utf-8')
 		if msg == 'ARE_YOU_ALONE':
-			if (this_node.successor == this_node.port) and (this_node.predeccessor == this_node.port):
+			if (this_node.successor == this_node.port) and (this_node.predecessor == this_node.port):
 				conn.send('YES'.encode('utf-8'))
 			else:
 				conn.send('NO'.encode('utf-8'))
@@ -116,13 +166,13 @@ def server_thread(this_node, conn):
 		if msg == 'UPDATE_SUCCESSOR_AND_PREDECESSOR':
 			conn.send('ACK'.encode('utf-8'))
 			other_port = (conn.recv(BUFFER_SIZE)).decode('utf-8')
-			this_node.predeccessor = other_port
+			this_node.predecessor = other_port
 			this_node.successor = other_port
 
 		if msg == 'I_AM_YOUR_PREDECESSOR':
 			conn.send('ACK'.encode('utf-8'))
 			port = int(conn.recv(BUFFER_SIZE).decode('utf-8'))
-			this_node.predeccessor = port
+			this_node.predecessor = port
 
 		if msg == 'I_AM_YOUR_SUCCESSOR':
 			conn.send('ACK'.encode('utf-8'))
@@ -137,7 +187,7 @@ def server_thread(this_node, conn):
 			conn.send(str(this_node.successor).encode('utf-8'))
 
 		if msg == 'SEND_ME_PREDECESSOR':
-			conn.send(str(this_node.predeccessor).encode('utf-8'))
+			conn.send(str(this_node.predecessor).encode('utf-8'))
 
 		if msg == 'UPDATE_SECOND_SUCCESSOR':
 			s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -146,10 +196,52 @@ def server_thread(this_node, conn):
 			this_node.second_successor = int(s.recv(BUFFER_SIZE).decode('utf-8'))
 			s.close()
 
+		if msg == 'PREDECESSOR_LEAVING':
+			conn.send('ACK'.encode('utf-8'))
+			leaving_port = int(conn.recv(BUFFER_SIZE).decode('utf-8'))
+			conn.send('ACK'.encode('utf-8'))
+			new_pred = int(conn.recv(BUFFER_SIZE).decode('utf-8'))
+			this_node.predecessor = new_pred
+			if leaving_port == this_node.second_successor:
+				this_node.second_successor = this_node.port
+
+		if msg == 'SUCCESSOR_LEAVING':
+			conn.send('ACK'.encode('utf-8'))
+			new_succ = int(conn.recv(BUFFER_SIZE).decode('utf-8'))
+			this_node.successor = new_succ
+			conn.send('ACK'.encode('utf-8'))
+			new_second_succ = int(conn.recv(BUFFER_SIZE).decode('utf-8'))
+			this_node.second_successor = new_second_succ
+
+			s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+			s.connect((IP_ADDRESS, int(this_node.predecessor)))
+			s.send('UPDATE_SECOND_SUCCESSOR_ALONE'.encode('utf-8'))
+			msg = s.recv(BUFFER_SIZE).decode('utf-8')
+			s.close()
+
+
+		if msg == 'UPDATE_SECOND_SUCCESSOR_ALONE':
+			update_second_seccessor_alone(this_node)
+			conn.send('ACK'.encode('utf-8'))
+
+		if msg == 'SUCCESSOR_AND_PREDECESSOR_LEAVING':
+			this_node.successor = this_node.port
+			this_node.predecessor = this_node.port
+			this_node.second_successor = this_node.port
+			conn.send('ACK'.encode('utf-8'))
+
+def update_second_seccessor_alone(node):
+	s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	s.connect((IP_ADDRESS, int(node.successor)))
+	s.send('SEND_ME_SUCCESSOR'.encode('utf-8'))
+	new_second_succ = int(s.recv(BUFFER_SIZE).decode('utf-8'))
+	s.close()
+	node.second_successor = new_second_succ
+
 
 def update_second_seccessor(node):
 	s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-	s.connect((IP_ADDRESS, int(node.predeccessor)))
+	s.connect((IP_ADDRESS, int(node.predecessor)))
 	s.send('SEND_ME_PREDECESSOR'.encode('utf-8'))
 	pre_pred = int(s.recv(BUFFER_SIZE).decode('utf-8'))
 	s.close()
