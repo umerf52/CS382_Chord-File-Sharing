@@ -148,16 +148,77 @@ def node_leaving(node):
 		s.close()
 
 
+def replicate_file(file_name, port):
+	s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	s.connect((IP_ADDRESS, int(port)))
+
+	s.send('REPLICATE_FILE'.encode('utf-8'))
+	msg = s.recv(BUFFER_SIZE).decode('utf-8')
+	if msg == 'ACK':
+		msg = ''
+		s.send(file_name.encode('utf-8'))
+		msg = s.recv(BUFFER_SIZE).decode('utf-8')
+		if msg == 'ACK':
+			file_size = os.path.getsize(file_name) 
+			s.send(str(file_size).encode('utf-8'))
+			msg = s.recv(BUFFER_SIZE).decode('utf-8')
+			if msg == 'ACK':
+				file = open(file_name, 'rb')
+				to_send = file.read(BUFFER_SIZE)
+				sent = len(to_send)
+				s.send(to_send)
+				while sent < file_size:
+					to_send = file.read(BUFFER_SIZE)
+					s.send(to_send)
+					sent += len(to_send)
+				file.close()
+	s.close()
+
+
+def send_file(file_name, port):
+	s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	s.connect((IP_ADDRESS, int(port)))
+
+	s.send('RECEIVE_FILE'.encode('utf-8'))
+	msg = s.recv(BUFFER_SIZE).decode('utf-8')
+	if msg == 'ACK':
+		msg = ''
+		s.send(file_name.encode('utf-8'))
+		msg = s.recv(BUFFER_SIZE).decode('utf-8')
+		if msg == 'ACK':
+			file_size = os.path.getsize(file_name) 
+			s.send(str(file_size).encode('utf-8'))
+			msg = s.recv(BUFFER_SIZE).decode('utf-8')
+			if msg == 'ACK':
+				file = open(file_name, 'rb')
+				to_send = file.read(BUFFER_SIZE)
+				sent = len(to_send)
+				s.send(to_send)
+				while sent < file_size:
+					to_send = file.read(BUFFER_SIZE)
+					s.send(to_send)
+					sent += len(to_send)
+				file.close()
+	s.close()
+
+
 def initiate_put(node):
 	file_name = input('Enter the name of the file you want to "put": ')
 	print(' ')
 
 	if os.path.isfile(file_name):
 		file_key = hash_func(file_name)
+		print('file_key', file_key)
 		pred_key = hash_func(IP_ADDRESS + str(node.predecessor))
-		if ((file_key < node.key) and ((file_key > pred_key and node.key > pred_key) or (file_key < pred_key and node.key < pred_key))) or (file_key > node.key and pred_key > node.key and file_key > pred_key):
+		if (node.port == node.successor) and (node.port == node.predecessor):
 			node.file_list.append(file_name)
 			print('File saved')
+		elif ((file_key < node.key) and ((file_key > pred_key and node.key > pred_key) or (file_key < pred_key and node.key < pred_key))) or (file_key > node.key and pred_key > node.key and file_key > pred_key):
+			node.file_list.append(file_name)
+			print('File saved')
+			t = threading.Thread(target=replicate_file, args=(file_name, node.successor))
+			t.daemon = True
+			t.start()
 		else:
 			t = threading.Thread(target=put_iterative, args=(file_key, file_name, node.successor, node.port))
 			t.daemon = True
@@ -173,38 +234,16 @@ def put_iterative(file_key, file_name, new_port, original_port):
 	s.send('SEND_ME_PREDECESSOR'.encode('utf-8'))
 	pred_port = int(s.recv(BUFFER_SIZE).decode('utf-8'))
 	pred_key = hash_func(IP_ADDRESS + str(pred_port))
+	s.send('SEND_ME_SUCCESSOR'.encode('utf-8'))
+	new_succ = int(s.recv(BUFFER_SIZE).decode('utf-8'))
+	s.close()
 
 	if ((file_key < temp_key) and ((file_key > pred_key and temp_key > pred_key) or (file_key < pred_key and temp_key < pred_key))) or (file_key > temp_key and pred_key > temp_key and file_key > pred_key):
-		s.send('RECEIVE_FILE'.encode('utf-8'))
-		msg = s.recv(BUFFER_SIZE).decode('utf-8')
-		if msg == 'ACK':
-			msg = ''
-			s.send(file_name.encode('utf-8'))
-			msg = s.recv(BUFFER_SIZE).decode('utf-8')
-			if msg == 'ACK':
-				file_size = os.path.getsize(file_name) 
-				s.send(str(file_size).encode('utf-8'))
-				msg = s.recv(BUFFER_SIZE).decode('utf-8')
-				if msg == 'ACK':
-					file = open(file_name, 'rb')
-					to_send = file.read(BUFFER_SIZE)
-					sent = len(to_send)
-					s.send(to_send)
-					while sent < file_size:
-						to_send = file.read(BUFFER_SIZE)
-						s.send(to_send)
-						sent += len(to_send)
-					file.close()
-					time.sleep(0.5)
-					s.send('FINISHED_SENDING'.encode('utf-8'))
-					print(s.recv(BUFFER_SIZE).decode('utf-8'))
-		s.close()
+		send_file(file_name, new_port)
+		print('Finsihed sending file')
 
 	else:
-		s.send('SEND_ME_SUCCESSOR'.encode('utf-8'))
-		new_port = int(s.recv(BUFFER_SIZE).decode('utf-8'))
-		s.close()
-		put_iterative(file_key, file_name, new_port, original_port)
+		put_iterative(file_key, file_name, new_succ, original_port)
 
 
 def client_thread(node):
@@ -299,7 +338,7 @@ def server_thread(this_node, conn):
 
 		if msg == 'RECEIVE_FILE':
 			conn.send('ACK'.encode('utf-8'))
-			file_name = conn.recv(BUFFER_SIZE).decode('utf-8')
+			file_name = conn.recv(BUFFER_SIZE).decode('utf-8')	
 			conn.send('ACK'.encode('utf-8'))
 			file_size = float(conn.recv(BUFFER_SIZE).decode('utf-8'))
 			conn.send('ACK'.encode('utf-8'))
@@ -314,9 +353,26 @@ def server_thread(this_node, conn):
 				file.write(to_write)
 			file.close()
 			this_node.file_list.append(file_name)
-			msg = conn.recv(BUFFER_SIZE).decode('utf-8')
-			if msg == 'FINISHED_SENDING':
-				conn.send('File saved'.encode('utf-8'))	
+
+			replicate_file(file_name, this_node.successor)
+
+		if msg == 'REPLICATE_FILE':
+			conn.send('ACK'.encode('utf-8'))
+			file_name = conn.recv(BUFFER_SIZE).decode('utf-8')	
+			conn.send('ACK'.encode('utf-8'))
+			file_size = float(conn.recv(BUFFER_SIZE).decode('utf-8'))
+			conn.send('ACK'.encode('utf-8'))
+
+			file = open(file_name,'wb')
+			to_write = conn.recv(BUFFER_SIZE)
+			file.write(to_write)
+			received = len(to_write)
+			while received < file_size:
+				to_write = conn.recv(BUFFER_SIZE)
+				received += len(to_write)
+				file.write(to_write)
+			file.close()
+			this_node.file_list.append(file_name)
 
 
 def update_second_seccessor_alone(node):
