@@ -7,7 +7,6 @@ import time
 
 # Globals
 IP_ADDRESS = socket.gethostbyname(socket.gethostname())
-# IP_ADDRESS = '192.168.137.1'
 TOTAL_NODES = 30
 BASE_16 = 16
 BUFFER_SIZE = 1024
@@ -218,14 +217,13 @@ def initiate_put(node):
 
 	if os.path.isfile(file_name):
 		file_key = hash_func(file_name)
-		print('file_key', file_key)
 		pred_key = hash_func(IP_ADDRESS + str(node.predecessor))
 		if (node.port == node.successor) and (node.port == node.predecessor):
 			node.file_list.append(file_name)
-			print('File saved')
+			print('File saved\n')
 		elif ((file_key < node.key) and ((file_key > pred_key and node.key > pred_key) or (file_key < pred_key and node.key < pred_key))) or (file_key > node.key and pred_key > node.key and file_key > pred_key):
 			node.file_list.append(file_name)
-			print('File saved')
+			print('File saved\n')
 			t = threading.Thread(target=replicate_file, args=(file_name, node.successor))
 			t.daemon = True
 			t.start()
@@ -234,7 +232,7 @@ def initiate_put(node):
 			t.daemon = True
 			t.start()
 	else:
-		print('File does not exist')
+		print('File does not exist\n')
 
 
 def put_iterative(file_key, file_name, new_port):
@@ -250,7 +248,7 @@ def put_iterative(file_key, file_name, new_port):
 
 	if ((file_key < temp_key) and ((file_key > pred_key and temp_key > pred_key) or (file_key < pred_key and temp_key < pred_key))) or (file_key > temp_key and pred_key > temp_key and file_key > pred_key):
 		send_file(file_name, new_port)
-		print('Finsihed sending file')
+		print('Finsihed sending file\n')
 
 	else:
 		put_iterative(file_key, file_name, new_succ)
@@ -258,6 +256,7 @@ def put_iterative(file_key, file_name, new_port):
 
 def initiate_get(node):
 	file_name = input('Enter the name of the file you want to "get": ')
+	print(' ')
 	if file_name != '':
 		if file_name in node.file_list:
 			print('File already exists\n')
@@ -338,7 +337,6 @@ def get_file_actual(port, file_name, node):
 		file.close()
 		node.file_list.append(file_name)
 		print('File received\n')
-
 
 
 def client_thread(node):
@@ -426,6 +424,10 @@ def server_thread(this_node, conn):
 
 		if msg == 'UPDATE_SECOND_SUCCESSOR_ALONE':
 			update_second_seccessor_alone(this_node)
+			this_node.print_information()
+			if (int(this_node.successor) == int(this_node.predecessor)):
+				for file in this_node.file_list:
+					send_file(file, this_node.successor)
 
 		if msg == 'SUCCESSOR_AND_PREDECESSOR_LEAVING':
 			this_node.successor = this_node.port
@@ -440,6 +442,7 @@ def server_thread(this_node, conn):
 				conn.send('ALREADY_HAVE_IT'.encode('utf-8'))
 				replicate_file(file_name, this_node.successor)
 				continue
+
 			else:
 				conn.send('ACK'.encode('utf-8'))
 			file_size = float(conn.recv(BUFFER_SIZE).decode('utf-8'))
@@ -510,7 +513,6 @@ def server_thread(this_node, conn):
 				print('Error, file does not exist\n')
 
 
-
 def update_second_seccessor_alone(node):
 	s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 	s.connect((IP_ADDRESS, int(node.successor)))
@@ -536,6 +538,44 @@ def update_second_seccessor(node):
 		another_socket.close()
 
 
+def ping_successor(node):
+	failed_attempts = 0
+	while True:
+		if (node.port == node.successor) and (node.port == node.predecessor):
+			pass
+		else:
+			try:
+				s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+				s.connect((IP_ADDRESS, int(node.successor)))
+				s.close()
+				failed_attempts = 0
+			except:
+				failed_attempts = failed_attempts + 1
+				if failed_attempts == 3:
+					successor_left_unexpectedly(node)
+					failed_attempts = 0
+
+		time.sleep(10)
+
+
+def successor_left_unexpectedly(node):
+	node.successor = node.second_successor
+	update_second_seccessor_alone(node)
+	s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	s.connect((IP_ADDRESS, int(node.successor)))
+	s.send('I_AM_YOUR_PREDECESSOR'.encode('utf-8'))
+	msg = s.recv(BUFFER_SIZE).decode('utf-8')
+	if msg == 'ACK':
+		s.send(str(node.port).encode('utf-8'))
+	s.close
+	another_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	another_socket.connect((IP_ADDRESS, int(node.predecessor)))
+	another_socket.send('UPDATE_SECOND_SUCCESSOR_ALONE'.encode('utf-8'))
+	another_socket.close()
+	for file in node.file_list:
+		send_file(file, node.successor)
+
+
 def main():
 	parser = argparse.ArgumentParser(description='Join DHT. ')
 	parser.add_argument('port', type=int, nargs=1)
@@ -543,11 +583,14 @@ def main():
 
 	port = args.port[0]
 	node = Node(port)
+	t = threading.Thread(target=ping_successor, args=(node,))
+	t.daemon = True
+	t.start()
 	print('My key is:', node.key)
 
 	other_port = input('Enter port of any known node, leave blank otherwise: ')
 	if (str(port) == other_port) or (int(port) > 65535) or (int(port) < 0):
-		print('What are you doing?')
+		print('Invalid ports\n')
 		return
 	if other_port:
 		join_me(node, other_port)
