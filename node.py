@@ -230,14 +230,14 @@ def initiate_put(node):
 			t.daemon = True
 			t.start()
 		else:
-			t = threading.Thread(target=put_iterative, args=(file_key, file_name, node.successor, node.port))
+			t = threading.Thread(target=put_iterative, args=(file_key, file_name, node.successor))
 			t.daemon = True
 			t.start()
 	else:
 		print('File does not exist')
 
 
-def put_iterative(file_key, file_name, new_port, original_port):
+def put_iterative(file_key, file_name, new_port):
 	temp_key = hash_func(IP_ADDRESS + str(new_port))
 	s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 	s.connect((IP_ADDRESS, int(new_port)))
@@ -253,12 +253,97 @@ def put_iterative(file_key, file_name, new_port, original_port):
 		print('Finsihed sending file')
 
 	else:
-		put_iterative(file_key, file_name, new_succ, original_port)
+		put_iterative(file_key, file_name, new_succ)
+
+
+def initiate_get(node):
+	file_name = input('Enter the name of the file you want to "get": ')
+	if file_name != '':
+		if file_name in node.file_list:
+			print('File already exists\n')
+			return
+		else:
+			if (node.port == node.successor) and (node.port == node.successor):
+				print('File not found\n')
+				return
+			file_key = hash_func(file_name)
+			t = threading.Thread(target=get_iterative, args=(file_key, node.successor, file_name, node))
+			t.daemon = True
+			t.start()
+	else:
+		print('Invalid file name\n')
+
+
+def get_iterative(file_key, port, file_name, node):
+	temp_key = hash_func(IP_ADDRESS + str(port))
+	s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	s.connect((IP_ADDRESS, int(port)))
+	s.send('SEND_ME_PREDECESSOR'.encode('utf-8'))
+	pred_port = int(s.recv(BUFFER_SIZE).decode('utf-8'))
+	pred_key = hash_func(IP_ADDRESS+str(pred_port))
+	s.send('SEND_ME_SUCCESSOR'.encode('utf-8'))
+	new_succ = int(s.recv(BUFFER_SIZE).decode('utf-8'))
+
+	if ((file_key < temp_key) and ((file_key > pred_key and temp_key > pred_key) or (file_key < pred_key and temp_key < pred_key))) or (file_key > temp_key and pred_key > temp_key and file_key > pred_key):
+		s.send(('DO_YOU_HAVE_FILE').encode('utf-8'))
+		msg = s.recv(BUFFER_SIZE).decode('utf-8')
+		if msg == 'ACK':
+			msg = ''
+			s.send(file_name.encode('utf-8'))
+			msg = s.recv(BUFFER_SIZE).decode('utf-8')
+			if msg == 'YES':
+				get_file_actual(port, file_name, node)
+			else:
+				if pred_port == new_succ:	
+					print('File not found\n')
+					return
+				msg = ''
+				another_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+				another_socket.connect((IP_ADDRESS, int(new_succ)))
+				another_socket.send('DO_YOU_HAVE_FILE'.encode('utf-8'))
+				msg = another_socket.recv(BUFFER_SIZE).decode('utf-8')
+				if msg == 'ACK':
+					msg = ''
+					another_socket.send(file_name.encode('utf-8'))	
+					msg = another_socket.recv(BUFFER_SIZE).decode('utf-8')
+					another_socket.close()
+					if msg == 'YES':
+						get_file_actual(new_succ, file_name, node)
+					else:
+						print('File not found\n')
+
+	else:
+		s.close()
+		get_iterative(file_key, new_succ, file_name, node)
+
+
+def get_file_actual(port, file_name, node):
+	s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+	s.connect((IP_ADDRESS, int(port)))
+	s.send('SEND_FILE'.encode('utf-8'))
+	msg = s.recv(BUFFER_SIZE).decode('utf-8')
+	if msg == 'ACK':
+		s.send(file_name.encode('utf-8'))
+		file_size = float(s.recv(BUFFER_SIZE).decode('utf-8'))
+		s.send('ACK'.encode('utf-8'))
+
+		file = open(file_name,'wb')
+		to_write = s.recv(BUFFER_SIZE)
+		file.write(to_write)
+		received = len(to_write)
+		while received < file_size:
+			to_write = s.recv(BUFFER_SIZE)
+			received += len(to_write)
+			file.write(to_write)
+		file.close()
+		node.file_list.append(file_name)
+		print('File received\n')
+
 
 
 def client_thread(node):
 	while True:
-		option = input('Enter 0 to leave DHT\nEnter 1 to print links\nEnter 2 to "put" a file\nEnter 4 to print available files\n\n')
+		option = input('Enter 0 to leave DHT\nEnter 1 to print links\nEnter 2 to "put" a file\nEnter 3 to "get" a file\nEnter 4 to print available files\n\n')
 		if option == '0':
 			node_leaving(node)
 			os._exit(0)
@@ -266,6 +351,8 @@ def client_thread(node):
 			node.print_information()
 		elif option == '2':
 			initiate_put(node)
+		elif option == '3':
+			initiate_get(node)
 		elif option == '4':
 			node.print_files()
 		else:
@@ -392,6 +479,36 @@ def server_thread(this_node, conn):
 				file.write(to_write)
 			file.close()
 			this_node.file_list.append(file_name)
+
+		if msg == 'DO_YOU_HAVE_FILE':
+			conn.send('ACK'.encode('utf-8'))
+			file_name = conn.recv(BUFFER_SIZE).decode('utf-8')
+			if file_name in this_node.file_list:
+				conn.send('YES'.encode('utf-8'))
+			else:
+				conn.send('NO'.encode('utf-8'))
+
+		if msg == 'SEND_FILE':
+			conn.send('ACK'.encode('utf-8'))
+			file_name = conn.recv(BUFFER_SIZE).decode('utf-8')
+			if os.path.isfile(file_name):
+				file_size = os.path.getsize(file_name) 
+				conn.send(str(file_size).encode('utf-8'))
+				msg = conn.recv(BUFFER_SIZE).decode('utf-8')
+				if msg == 'ACK':
+					file = open(file_name, 'rb')
+					to_send = file.read(BUFFER_SIZE)
+					sent = len(to_send)
+					conn.send(to_send)
+					while sent < file_size:
+						to_send = file.read(BUFFER_SIZE)
+						conn.send(to_send)
+						sent += len(to_send)
+					file.close()
+
+			else:
+				print('Error, file does not exist\n')
+
 
 
 def update_second_seccessor_alone(node):
