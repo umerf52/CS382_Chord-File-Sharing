@@ -104,10 +104,12 @@ def actual_join(s, node, known_port, other_pred_port):
 
 
 def node_leaving(node):
-	if node.successor == node.port:
+	if (node.successor == node.port) and (node.predecessor == node.port):
 		return
 
 	elif node.successor == node.predecessor:
+		for file in node.file_list:
+			send_file(file, node.successor)
 		another_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		another_socket.connect((IP_ADDRESS, int(node.successor)))
 		another_socket.send('SUCCESSOR_AND_PREDECESSOR_LEAVING'.encode('utf-8'))
@@ -135,6 +137,8 @@ def node_leaving(node):
 		another_socket.close()
 
 		# Tell successor
+		for file in node.file_list:
+			send_file(file, node.successor)
 		s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 		s.connect((IP_ADDRESS, int(node.successor)))
 		s.send('PREDECESSOR_LEAVING'.encode('utf-8'))
@@ -172,6 +176,9 @@ def replicate_file(file_name, port):
 					s.send(to_send)
 					sent += len(to_send)
 				file.close()
+
+		elif msg == 'ALREADY_HAVE_IT':
+			pass
 	s.close()
 
 
@@ -199,6 +206,9 @@ def send_file(file_name, port):
 					s.send(to_send)
 					sent += len(to_send)
 				file.close()
+
+		elif msg == 'ALREADY_HAVE_IT':
+			pass
 	s.close()
 
 
@@ -338,8 +348,13 @@ def server_thread(this_node, conn):
 
 		if msg == 'RECEIVE_FILE':
 			conn.send('ACK'.encode('utf-8'))
-			file_name = conn.recv(BUFFER_SIZE).decode('utf-8')	
-			conn.send('ACK'.encode('utf-8'))
+			file_name = conn.recv(BUFFER_SIZE).decode('utf-8')
+			if file_name in this_node.file_list:
+				conn.send('ALREADY_HAVE_IT'.encode('utf-8'))
+				replicate_file(file_name, this_node.successor)
+				continue
+			else:
+				conn.send('ACK'.encode('utf-8'))
 			file_size = float(conn.recv(BUFFER_SIZE).decode('utf-8'))
 			conn.send('ACK'.encode('utf-8'))
 
@@ -359,7 +374,11 @@ def server_thread(this_node, conn):
 		if msg == 'REPLICATE_FILE':
 			conn.send('ACK'.encode('utf-8'))
 			file_name = conn.recv(BUFFER_SIZE).decode('utf-8')	
-			conn.send('ACK'.encode('utf-8'))
+			if file_name in this_node.file_list:
+				conn.send('ALREADY_HAVE_IT'.encode('utf-8'))
+				continue
+			else:
+				conn.send('ACK'.encode('utf-8'))
 			file_size = float(conn.recv(BUFFER_SIZE).decode('utf-8'))
 			conn.send('ACK'.encode('utf-8'))
 
